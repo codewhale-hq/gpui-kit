@@ -36,6 +36,7 @@ pub struct ResizablePanelGroup {
     children: Vec<ResizablePanel>,
     on_resize: Rc<dyn Fn(&Entity<ResizableState>, &mut Window, &mut App)>,
     handle_appearance: Option<ResizeHandleRenderer>,
+    measure: bool,
 }
 
 impl ResizablePanelGroup {
@@ -49,6 +50,7 @@ impl ResizablePanelGroup {
             size: None,
             on_resize: Rc::new(|_, _, _| {}),
             handle_appearance: None,
+            measure: true,
         }
     }
 
@@ -66,6 +68,21 @@ impl ResizablePanelGroup {
     /// If not provided, it will handle its own state internally.
     pub fn with_state(mut self, state: &Entity<ResizableState>) -> Self {
         self.state = Some(state.clone());
+        self
+    }
+
+    /// Whether this group writes the geometry it lays out at into its state,
+    /// default true.
+    ///
+    /// A state bound with [`Self::with_state`] and drawn in several windows
+    /// holds one measurement. Every window writing its own size into it makes
+    /// the other window's layout stale, and the two then redraw each other
+    /// without end. Pass `false` in every window but the one whose size the
+    /// shared layout follows: those windows draw the panels at the sizes the
+    /// state already has, and do not drive handle drags against geometry
+    /// they did not measure.
+    pub fn measure(mut self, measure: bool) -> Self {
+        self.measure = measure;
         self
     }
 
@@ -169,12 +186,13 @@ impl RenderOnce for ResizablePanelGroup {
                         panel.axis = self.axis;
                         panel.state = Some(state.clone());
                         panel.handle_appearance = self.handle_appearance.clone();
+                        panel.measure = self.measure;
                         panel
                     }),
             )
-            .on_prepaint({
+            .when(self.measure, |this| {
                 let state = state.clone();
-                move |bounds, window, cx| {
+                this.on_prepaint(move |bounds, window, cx| {
                     // The same bounds as last frame change nothing; updating
                     // the state for them would mark it changed every frame.
                     if state.read(cx).bounds == bounds {
@@ -202,12 +220,13 @@ impl RenderOnce for ResizablePanelGroup {
                             });
                         }
                     })
-                }
+                })
             })
             .child(ResizePanelGroupElement {
                 state: state.clone(),
                 axis: self.axis,
                 on_resize: self.on_resize.clone(),
+                measure: self.measure,
             })
     }
 }
@@ -252,6 +271,8 @@ pub struct ResizablePanel {
     visible: bool,
     style: StyleRefinement,
     handle_appearance: Option<ResizeHandleRenderer>,
+    /// Set by the group: see [`ResizablePanelGroup::measure`].
+    measure: bool,
 }
 
 impl ResizablePanel {
@@ -267,6 +288,7 @@ impl ResizablePanel {
             visible: true,
             style: StyleRefinement::default(),
             handle_appearance: None,
+            measure: true,
         }
     }
 
@@ -356,9 +378,9 @@ impl RenderOnce for ResizablePanel {
                 Some(size) => this.flex_basis(size.min(size_range.end).max(size_range.start)),
                 None => this,
             })
-            .on_prepaint({
+            .when(self.measure, |this| {
                 let state = state.clone();
-                move |bounds, _, cx| {
+                this.on_prepaint(move |bounds, _, cx| {
                     if !state
                         .read(cx)
                         .panel_size_changes(self.panel_ix, bounds, &self.size_range)
@@ -368,7 +390,7 @@ impl RenderOnce for ResizablePanel {
                     state.update(cx, |state, cx| {
                         state.update_panel_size(self.panel_ix, bounds, self.size_range, cx)
                     })
-                }
+                })
             })
             .children(self.children)
             .when(self.panel_ix > 0, |this| {
@@ -395,6 +417,7 @@ struct ResizePanelGroupElement {
     state: Entity<ResizableState>,
     on_resize: Rc<dyn Fn(&Entity<ResizableState>, &mut Window, &mut App)>,
     axis: Axis,
+    measure: bool,
 }
 
 impl IntoElement for ResizePanelGroupElement {
@@ -449,6 +472,11 @@ impl Element for ResizePanelGroupElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        // A drag resizes against the panel bounds the measuring window
+        // recorded; pointer positions from any other window do not match them.
+        if !self.measure {
+            return;
+        }
         window.on_mouse_event({
             let state = self.state.clone();
             let axis = self.axis;
