@@ -779,6 +779,13 @@ impl RenderOnce for Button {
         }))
         .selected(selected)
         .disabled(disabled)
+        .a11y_synthetic_children(move |builder| {
+            if disabled || loading {
+                let node = builder.parent_node();
+                node.set_disabled();
+                node.remove_action(gpui::accesskit::Action::Click);
+            }
+        })
         // Base layers semantic states over the builder chain, so the caller's
         // own style is replayed inside each state to keep it the closest layer.
         .styles(|styles| {
