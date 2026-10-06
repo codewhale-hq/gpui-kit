@@ -396,7 +396,7 @@ pub(super) fn sync_focused_input_registry(
 #[cfg(test)]
 mod registry_tests {
     use super::{AnyInputState, InputState, sync_focused_input_registry};
-    use crate::Root;
+    use crate::{Root, root::WindowState};
     use gpui::{
         AppContext as _, Context, Focusable as _, IntoElement, Render, TestAppContext,
         VisualTestContext, Window, div,
@@ -429,7 +429,12 @@ mod registry_tests {
         let notifications = Rc::new(Cell::new(0));
         let observation = cx.update(|cx| {
             let count = notifications.clone();
-            let entity = root.update(cx, |_, _, cx| cx.entity()).unwrap();
+            let entity = root
+                .update(cx, |root, _, _| {
+                    root.plugin::<WindowState>()
+                        .expect("component WindowState must be mounted")
+                })
+                .unwrap();
             cx.observe(&entity, move |_, _| count.set(count.get() + 1))
         });
         let cx = &mut VisualTestContext::from_window(root.into(), cx);
@@ -455,7 +460,7 @@ mod registry_tests {
             sync_focused_input_registry(second.clone(), window, cx);
             sync_focused_input_registry(first.clone(), window, cx);
             assert_eq!(
-                Root::read(window, cx).focused_input,
+                WindowState::read(window, cx).focused_input,
                 Some(AnyInputState::from(second.clone()))
             );
         });
@@ -468,7 +473,7 @@ mod registry_tests {
             window.blur(cx);
             sync_focused_input_registry(second.clone(), window, cx);
             sync_focused_input_registry(second.clone(), window, cx);
-            assert_eq!(Root::read(window, cx).focused_input, None);
+            assert_eq!(WindowState::read(window, cx).focused_input, None);
         });
         assert_eq!(
             notifications.get(),
