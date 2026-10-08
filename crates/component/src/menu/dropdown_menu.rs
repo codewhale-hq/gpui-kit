@@ -378,7 +378,7 @@ mod tests {
                     let dropdown = button.dropdown_menu(|menu, _, _| menu);
                     let mut element = dropdown.trigger.render(window, cx).into_any_element();
                     // The styled Button renders an unstyled Button view, whose
-                    // actual semantic element is its rendered Stateful<Div>.
+                    // semantic element uses the feature-aware observation alias.
                     let base = element
                         .downcast_mut::<gpui::ViewElement<gpui_base::Button>>()
                         .unwrap();
@@ -386,7 +386,7 @@ mod tests {
                     let child = child
                         .as_mut()
                         .unwrap()
-                        .downcast_mut::<gpui::Stateful<gpui::Div>>()
+                        .downcast_mut::<gpui_base::ObservedElement<gpui::Stateful<gpui::Div>>>()
                         .unwrap();
                     let mut node = gpui::accesskit::Node::new(gpui::Role::Button);
                     child.write_a11y_info(&mut node);
