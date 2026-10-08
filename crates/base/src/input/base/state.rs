@@ -521,7 +521,8 @@ pub struct InputBaseState<M: InputModeKind> {
     context_menu_handler: Option<
         Rc<dyn Fn(NativeMenu, InputContextMenuCapabilities, Point<Pixels>, &mut Window, &mut App)>,
     >,
-    pending_context_menu: Option<(Point<Pixels>, usize)>,
+    // None as the anchor means a decoration requested the menu without a text hit.
+    pending_context_menu: Option<(Point<Pixels>, Option<usize>)>,
 
     /// Whether the context menu that shows on right-click is enabled.
     ///
@@ -770,6 +771,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         let focus_handle = cx.focus_handle().tab_stop(true);
         let blink_cursor = cx.new(|_| BlinkCursor::new());
         let undo_manager = UndoManager::new();
+        let input = cx.entity().downgrade();
 
         let _subscriptions = vec![
             // Key bindings can consume events before on_key_down. Observe input
@@ -777,8 +779,13 @@ impl<M: InputModeKind> InputBaseState<M> {
             cx.intercept_keystrokes({
                 let focus_handle = focus_handle.clone();
                 let blink_cursor = blink_cursor.downgrade();
-                move |_, window, cx| {
+                move |event, window, cx| {
                     if focus_handle.is_focused(window) {
+                        // Action bindings can consume Escape before raw key listeners,
+                        // including in a read-only field. Cancel without consuming it.
+                        if event.keystroke.key == "escape" {
+                            _ = input.update(cx, |input, _| input.cancel_context_menu());
+                        }
                         _ = blink_cursor.update(cx, |cursor, cx| cursor.pause(cx));
                     }
                 }
@@ -787,7 +794,9 @@ impl<M: InputModeKind> InputBaseState<M> {
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
             // Blink the cursor when the window is active, pause when it's not.
             cx.observe_window_activation(window, |input, window, cx| {
-                if window.is_window_active() {
+                if !window.is_window_active() {
+                    input.cancel_context_menu();
+                } else {
                     let focus_handle = input.focus_handle.clone();
                     if focus_handle.is_focused(window) {
                         input.blink_cursor.update(cx, |blink_cursor, cx| {
@@ -895,6 +904,9 @@ impl<M: InputModeKind> InputBaseState<M> {
 
     pub fn set_context_menu_enabled(&mut self, enabled: bool) {
         self.enable_context_menu = enabled;
+        if !enabled {
+            self.cancel_context_menu();
+        }
     }
 
     /// Set whether search UI allows replacement, default is true.
@@ -1195,6 +1207,7 @@ impl<M: InputModeKind> InputBaseState<M> {
 
         self.disabled = disabled;
         if disabled {
+            self.cancel_context_menu();
             M::hide_context_menu(self, cx);
             M::clear_inline_completion(self, cx);
         }
@@ -2218,39 +2231,107 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.propagate();
     }
 
+    /// Queue a context menu for an input decoration, preserving every selection.
+    ///
+    /// Call on an unclaimed right-button press, then [`Self::complete_context_menu`]
+    /// on release or [`Self::cancel_context_menu`] if the gesture is cancelled.
+    /// The editor and its decorations share one pending request. Disabled inputs,
+    /// disabled menus and deferred contexts refuse the request.
+    pub fn request_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.enable_context_menu
+            || self.disabled
+            || crate::GlobalState::is_in_deferred_context(cx)
+            || self.pending_context_menu.is_some()
+        {
+            return false;
+        }
+        self.undo_manager.break_transaction_coalescing();
+        M::clear_inline_completion(self, cx);
+        self.dismiss_touch_selection(cx);
+        self.pending_context_menu = Some((position, None));
+        true
+    }
+
+    /// Complete the shared right-button request once, using the current policy.
+    ///
+    /// An unmatched release does nothing. Taking the request before delivery lets
+    /// a decoration and the editor both receive the release without opening twice.
+    pub fn complete_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some((position, offset)) = self.pending_context_menu.take() else {
+            return false;
+        };
+        if !self.enable_context_menu
+            || self.disabled
+            || crate::GlobalState::is_in_deferred_context(cx)
+        {
+            return false;
+        }
+        self.handle_right_click_menu(position, offset, window, cx);
+        true
+    }
+
+    /// Cancel the shared pending right-button request without changing selection.
+    pub fn cancel_context_menu(&mut self) {
+        self.pending_context_menu = None;
+    }
+
     /// Show the right-click context menu as a native OS menu.
     pub(crate) fn handle_right_click_menu(
         &mut self,
         position: Point<Pixels>,
-        offset: usize,
+        offset: Option<usize>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.disabled {
+        if self.disabled || !self.enable_context_menu {
             return;
         }
         if crate::GlobalState::is_in_deferred_context(cx) {
             return;
         }
 
-        if !self.active_selection().contains(offset) {
-            self.move_to(offset, None, cx);
+        if let Some(offset) = offset {
+            if !self.active_selection().contains(offset) {
+                self.move_to(offset, None, cx);
+            }
+            if self.is_code_editor() {
+                M::on_hover_definition(self, offset, window, cx);
+            }
         }
 
-        if self.is_code_editor() {
-            M::on_hover_definition(self, offset, window, cx);
-        }
-
-        if let Some(handler) = self.context_menu_handler.clone() {
-            let capabilities = self.context_menu_capabilities();
+        if self.context_menu_handler.is_some() {
             let input = cx.weak_entity();
-            // The handler runs with the input released, so a custom builder can
-            // read it (cursor, selection, text) to build its items.
             window.defer(cx, move |window, cx| {
-                if input.upgrade().is_none() {
+                let Some(entity) = input.upgrade() else {
                     return;
-                }
+                };
+                // Descendant release handlers can change policy or focus after
+                // the frame completes the request, before deferred delivery.
+                let delivery = entity.read_with(cx, |state, cx| {
+                    if state.disabled
+                        || !state.enable_context_menu
+                        || crate::GlobalState::is_in_deferred_context(cx)
+                        || !(state.focus_handle.is_focused(window)
+                            || state.has_selection_focus(window, cx))
+                        || !window.is_window_active()
+                    {
+                        return None;
+                    }
+                    state
+                        .context_menu_handler
+                        .clone()
+                        .map(|handler| (handler, state.context_menu_capabilities()))
+                });
+                let Some((handler, capabilities)) = delivery else {
+                    return;
+                };
                 let previous_focus = window.focused(cx);
+                // The handler runs with the input released, so a custom builder can
+                // read it (cursor, selection, text) to build its items.
                 handler(NativeMenu::new(), capabilities, position, window, cx);
                 // A drawn menu takes focus synchronously; native menus leave it
                 // on the input. Capture it here rather than in the handler.
@@ -2484,11 +2565,11 @@ impl<M: InputModeKind> InputBaseState<M> {
 
         // Show Mouse context menu
         if event.button == MouseButton::Right {
-            if self.enable_context_menu {
+            if self.request_context_menu(event.position, cx) {
                 if !self.active_selection().contains(offset) {
                     self.move_to(offset, None, cx);
                 }
-                self.pending_context_menu = Some((event.position, offset));
+                self.pending_context_menu = Some((event.position, Some(offset)));
             }
             return;
         }
@@ -2527,9 +2608,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx: &mut Context<Self>,
     ) {
         if event.button == MouseButton::Right {
-            if let Some((position, offset)) = self.pending_context_menu.take() {
-                self.handle_right_click_menu(position, offset, window, cx);
-            }
+            self.complete_context_menu(window, cx);
         }
         if self.active_selection().is_empty() {
             self.active_selection_mut().reversed = false;
@@ -3568,6 +3647,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     fn on_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_context_menu();
         if M::is_context_menu_open(self, cx) {
             return;
         }
@@ -4655,6 +4735,16 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             .id("input-state")
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
+            .capture_any_mouse_down(window.listener_for(&entity, |state, _, _, _| {
+                state.cancel_context_menu();
+            }))
+            .on_mouse_down_out(window.listener_for(&entity, |state, _, _, _| {
+                state.cancel_context_menu();
+            }))
+            .on_mouse_up_out(
+                MouseButton::Right,
+                window.listener_for(&entity, |state, _, _, _| state.cancel_context_menu()),
+            )
             .when(self.is_editable(), |this| {
                 this.on_action(window.listener_for(&entity, InputBaseState::backspace))
                     .on_action(window.listener_for(&entity, InputBaseState::delete))
@@ -6147,61 +6237,59 @@ mod tests {
     }
 
     #[gpui::test]
-    fn context_menu_handler_is_deferred_and_respects_disabled(cx: &mut TestAppContext) {
-        use std::{cell::Cell, rc::Rc};
+    fn context_menu_handler_is_deferred_and_respects_current_policy(cx: &mut TestAppContext) {
+        use std::{
+            cell::{Cell, RefCell},
+            rc::Rc,
+        };
         cx.update(crate::init);
         let input_view = InputView::new(cx);
         let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
         let input = input_view.input;
         let calls = Rc::new(Cell::new(0usize));
         let items = Rc::new(Cell::new(0usize));
-        let menu_focus = cx.update(|_, cx| cx.focus_handle());
+        let delivered = Rc::new(RefCell::new(Vec::new()));
 
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
+                state.focus(window, cx);
                 let calls2 = calls.clone();
                 let items2 = items.clone();
-                let menu_focus = menu_focus.clone();
-                state.on_context_menu(Rc::new(move |menu, _, _, window, cx| {
+                let delivered = delivered.clone();
+                state.on_context_menu(Rc::new(move |menu, capabilities, _, _, _| {
                     calls2.set(calls2.get() + 1);
                     items2.set(menu.items.len());
-                    menu_focus.focus(window, cx);
+                    delivered.borrow_mut().push(capabilities);
                 }));
-                state.handle_right_click_menu(point(px(0.), px(0.)), 0, window, cx);
+                state.handle_right_click_menu(point(px(0.), px(0.)), Some(0), window, cx);
+                // Delivery must not use the pre-defer capability snapshot.
+                state.masked = true;
+                state.readonly = true;
             })
         });
         assert_eq!(calls.get(), 1);
         assert_eq!(items.get(), 0);
-        input.read_with(&cx, |state, _| {
-            assert_eq!(
-                state
-                    .selection_focus
-                    .as_ref()
-                    .and_then(WeakFocusHandle::upgrade)
-                    .as_ref(),
-                Some(&menu_focus),
-                "the menu callback must retain selection without reborrowing its input"
-            );
-        });
-
-        // A custom handler may keep using the same, already-focused menu.
-        cx.update(|window, cx| {
-            input.update(cx, |state, cx| {
-                state.handle_right_click_menu(point(px(0.), px(0.)), 0, window, cx);
-            });
-        });
-        assert_eq!(calls.get(), 2);
-        cx.update(|window, cx| {
-            assert!(input.read(cx).has_selection_focus(window, cx));
-        });
+        assert!(delivered.borrow()[0].is_masked());
+        assert!(delivered.borrow()[0].is_readonly());
 
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
+                state.handle_right_click_menu(point(px(0.), px(0.)), Some(0), window, cx);
                 state.disabled = true;
-                state.handle_right_click_menu(point(px(0.), px(0.)), 0, window, cx);
             })
         });
-        assert_eq!(calls.get(), 2);
+        assert_eq!(calls.get(), 1);
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.disabled = false;
+                state.handle_right_click_menu(point(px(0.), px(0.)), Some(0), window, cx);
+                state.set_context_menu_enabled(false);
+            })
+        });
+        assert_eq!(calls.get(), 1);
     }
 
     #[gpui::test]
@@ -6213,15 +6301,18 @@ mod tests {
         let input = input_view.input;
         let cursor = Rc::new(Cell::new(None));
 
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
+                state.focus(window, cx);
                 state.set_value("hello", window, cx);
                 let weak = cx.weak_entity();
                 let cursor = cursor.clone();
                 state.on_context_menu(Rc::new(move |_, _, _, _, cx| {
                     cursor.set(weak.upgrade().map(|input| input.read(cx).cursor()));
                 }));
-                state.handle_right_click_menu(point(px(0.), px(0.)), 2, window, cx);
+                state.handle_right_click_menu(point(px(0.), px(0.)), Some(2), window, cx);
             })
         });
         assert_eq!(cursor.get(), Some(2));

@@ -781,14 +781,43 @@ impl RenderOnce for Input {
             .focused(focused)
             .disabled(disabled)
             .track_focus(&frame_focus_handle)
+            .capture_any_mouse_down({
+                let state = state.clone();
+                move |_, _, cx| state.cancel_context_menu(cx)
+            })
+            .on_mouse_down_out({
+                let state = state.clone();
+                move |_, _, cx| state.cancel_context_menu(cx)
+            })
             .on_mouse_down(MouseButton::Right, {
                 let state = state.clone();
-                move |_, window, cx| {
+                move |event, window, cx| {
+                    // A descendant owns a prevented press. The editor has already
+                    // queued its own hit request; decorations preserve selection.
+                    if !window.default_prevented() && state.request_context_menu(event.position, cx)
+                    {
+                        state.focus(window, cx);
+                        window.prevent_default();
+                    }
                     // The text element has already taken focus. Publish its state
                     // before an outer ContextMenu resolves the selection owner;
                     // render-time registration still names the previous input.
                     sync_focused_input_registry(&state, window, cx);
                 }
+            })
+            .capture_any_mouse_up({
+                let state = state.clone();
+                move |event, window, cx| {
+                    if event.button == MouseButton::Right {
+                        // Drain before the inner editor's outside-up cancellation,
+                        // but let its bubble handler finish selection/drag cleanup.
+                        state.complete_context_menu(window, cx);
+                    }
+                }
+            })
+            .on_mouse_up_out(MouseButton::Right, {
+                let state = state.clone();
+                move |_, _, cx| state.cancel_context_menu(cx)
             })
             .when(disabled, |this| {
                 this.capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
