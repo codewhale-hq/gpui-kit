@@ -144,6 +144,25 @@ impl TextInputState {
             .update(cx, |state, _| state.on_context_menu(handler)))
     }
 
+    pub(crate) fn request_context_menu(
+        &self,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut App,
+    ) -> bool {
+        dispatch!(self, |state| state
+            .update(cx, |state, cx| state.request_context_menu(position, cx)))
+    }
+
+    pub(crate) fn complete_context_menu(&self, window: &mut Window, cx: &mut App) {
+        dispatch!(self, |state| state
+            .update(cx, |state, cx| state.complete_context_menu(window, cx)));
+    }
+
+    pub(crate) fn cancel_context_menu(&self, cx: &mut App) {
+        dispatch!(self, |state| state
+            .update(cx, |state, _| state.cancel_context_menu()))
+    }
+
     /// The selection a long press made, laid out for its handles and menu.
     pub(crate) fn touch_selection(&self, cx: &App) -> Option<gpui_base::TouchSelectionSnapshot> {
         dispatch!(self, |state| state.read(cx).touch_selection())

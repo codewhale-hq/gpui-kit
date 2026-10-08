@@ -5,6 +5,8 @@ mod completions;
 mod composition;
 #[path = "input/constraints.rs"]
 mod constraints;
+#[path = "input/context_menu.rs"]
+mod context_menu;
 #[path = "input/editing.rs"]
 mod editing;
 #[path = "input/editor.rs"]
