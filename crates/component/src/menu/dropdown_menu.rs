@@ -30,7 +30,16 @@ pub trait DropdownMenu: Styled + Selectable + InteractiveElement + IntoElement +
     }
 }
 
-impl DropdownMenu for Button {}
+impl DropdownMenu for Button {
+    fn dropdown_menu_with_anchor(
+        mut self,
+        anchor: impl Into<Anchor>,
+        f: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> DropdownMenuPopover<Self> {
+        let id = self.interactivity().element_id.clone();
+        DropdownMenuPopover::new(id.unwrap_or(0.into()), anchor, self.menu_trigger(), f)
+    }
+}
 
 #[derive(IntoElement)]
 pub struct DropdownMenuPopover<T: Selectable + IntoElement + 'static> {
@@ -295,6 +304,62 @@ mod tests {
     actions!(dropdown_menu_test, [CopyText]);
 
     const CONTEXT: &str = "dropdown_menu_test";
+
+    #[gpui::test]
+    fn button_menu_trigger_exposes_activation_and_expanded_state(cx: &mut TestAppContext) {
+        use crate::Disableable as _;
+        use gpui::Element as _;
+        use std::sync::{Arc, Mutex};
+
+        struct Probe(Arc<Mutex<Vec<gpui::accesskit::Node>>>);
+        impl Render for Probe {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let mut result = self.0.lock().unwrap();
+                for button in [
+                    Button::new("closed").accessibility_label("Conversation actions"),
+                    Button::new("open")
+                        .accessibility_label("Conversation actions")
+                        .open(true),
+                    Button::new("disabled")
+                        .accessibility_label("Conversation actions")
+                        .disabled(true),
+                ] {
+                    let dropdown = button.dropdown_menu(|menu, _, _| menu);
+                    let mut element = dropdown.trigger.render(window, cx).into_any_element();
+                    // The styled Button renders an unstyled Button view, whose
+                    // actual semantic element is its rendered Stateful<Div>.
+                    let base = element
+                        .downcast_mut::<gpui::ViewElement<gpui_base::Button>>()
+                        .unwrap();
+                    let (_, mut child) = base.request_layout(None, None, window, cx);
+                    let child = child
+                        .as_mut()
+                        .unwrap()
+                        .downcast_mut::<gpui::Stateful<gpui::Div>>()
+                        .unwrap();
+                    let mut node = gpui::accesskit::Node::new(gpui::Role::Button);
+                    child.write_a11y_info(&mut node);
+                    result.push(node);
+                }
+                div()
+            }
+        }
+
+        cx.update(crate::init);
+        let result = Arc::new(Mutex::new(Vec::new()));
+        let (_, cx) = cx.add_window_view({
+            let result = result.clone();
+            move |_, _| Probe(result)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let nodes = result.lock().unwrap();
+        assert_eq!(nodes[0].label(), Some("Conversation actions"));
+        assert!(nodes[0].supports_action(gpui::accesskit::Action::Click));
+        assert_eq!(nodes[0].is_expanded(), Some(false));
+        assert!(nodes[1].supports_action(gpui::accesskit::Action::Click));
+        assert_eq!(nodes[1].is_expanded(), Some(true));
+        assert!(!nodes[2].supports_action(gpui::accesskit::Action::Click));
+    }
 
     /// The story shape: the key binding lives in the key context of the
     /// trigger's ancestor, the menu names no `action_context`, and other

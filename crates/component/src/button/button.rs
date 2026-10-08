@@ -197,6 +197,7 @@ pub struct Button {
     /// as it is open. Kept apart from `selected` because the two states mean
     /// different things, even though they paint the same today.
     open: bool,
+    menu_trigger: bool,
     toggled: Option<bool>,
     role: RoleOverride,
     variant: ButtonVariant,
@@ -247,6 +248,7 @@ impl Button {
             disabled: false,
             selected: false,
             open: false,
+            menu_trigger: false,
             toggled: None,
             role: RoleOverride::default(),
             variant: ButtonVariant::default(),
@@ -308,6 +310,11 @@ impl Button {
 
     pub(crate) fn is_disabled(&self) -> bool {
         self.disabled
+    }
+
+    pub(crate) fn menu_trigger(mut self) -> Self {
+        self.menu_trigger = true;
+        self
     }
 
     pub(crate) fn is_outline(&self) -> bool {
@@ -599,6 +606,8 @@ impl RenderOnce for Button {
         let disabled = self.disabled;
         let selected = self.shows_selected_style();
         let loading = self.loading;
+        let menu_trigger = self.menu_trigger;
+        let open = self.open;
         let tooltip_placement = self.tooltip_placement;
         let hover_group = self.hover_group;
         let hover_group_held = self.hover_group_held;
@@ -780,6 +789,11 @@ impl RenderOnce for Button {
         .selected(selected)
         .disabled(disabled)
         .a11y_synthetic_children(move |builder| {
+            if menu_trigger {
+                builder
+                    .parent_node()
+                    .set_has_popup(gpui::accesskit::HasPopup::Menu);
+            }
             if disabled || loading {
                 let node = builder.parent_node();
                 node.set_disabled();
@@ -808,6 +822,17 @@ impl RenderOnce for Button {
         })
         .when_some(accessibility_label, |this, label| {
             this.accessibility_label(label)
+        })
+        .when(menu_trigger, |this| this.aria_expanded(open))
+        .when(menu_trigger && interactive, |this| {
+            let focus_handle = focus_handle.clone();
+            this.on_a11y_action(gpui::accesskit::Action::Click, move |_, window, cx| {
+                // Dispatch through the same popover command as Enter/Space. The
+                // trigger's focus path identifies the owning popup even when a
+                // screen reader presses it while the composer still has focus.
+                focus_handle.focus(window, cx);
+                window.dispatch_action(Box::new(crate::actions::Confirm { secondary: false }), cx);
+            })
         })
         .when_some(self.toggled, |this, toggled| {
             this.aria_toggled(if toggled {
