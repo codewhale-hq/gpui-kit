@@ -3,9 +3,9 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AccessibleAction, AnyElement, App, DefiniteLength, Edges, ElementId, Entity, FocusHandle, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Rems, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, TouchPhase, Window, div,
-    px, relative,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Rems, RenderOnce, Role,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, TouchPhase,
+    Window, div, px, relative,
 };
 
 use crate::button::{Button, ButtonRounded, ButtonVariants as _};
@@ -768,6 +768,40 @@ impl RenderOnce for Input {
             .focused(focused)
             .disabled(disabled)
             .track_focus(&frame_focus_handle)
+            .capture_any_mouse_down({
+                let state = state.clone();
+                move |_, _, cx| state.cancel_context_menu(cx)
+            })
+            .on_mouse_down_out({
+                let state = state.clone();
+                move |_, _, cx| state.cancel_context_menu(cx)
+            })
+            .on_mouse_down(MouseButton::Right, {
+                let state = state.clone();
+                move |event, window, cx| {
+                    // A descendant owns a prevented press. The editor has already
+                    // queued its own hit request; decorations preserve selection.
+                    if !window.default_prevented() && state.request_context_menu(event.position, cx)
+                    {
+                        state.focus(window, cx);
+                        window.prevent_default();
+                    }
+                }
+            })
+            .capture_any_mouse_up({
+                let state = state.clone();
+                move |event, window, cx| {
+                    if event.button == MouseButton::Right {
+                        // Drain before the inner editor's outside-up cancellation,
+                        // but let its bubble handler finish selection/drag cleanup.
+                        state.complete_context_menu(window, cx);
+                    }
+                }
+            })
+            .on_mouse_up_out(MouseButton::Right, {
+                let state = state.clone();
+                move |_, _, cx| state.cancel_context_menu(cx)
+            })
             .when(disabled, |this| {
                 this.capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
             })
