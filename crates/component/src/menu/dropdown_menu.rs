@@ -306,6 +306,57 @@ mod tests {
     const CONTEXT: &str = "dropdown_menu_test";
 
     #[gpui::test]
+    fn ineligible_button_cannot_open_its_menu_from_keyboard(cx: &mut TestAppContext) {
+        use crate::Disableable as _;
+
+        struct Probe {
+            loading: bool,
+            disabled: bool,
+            opened: Rc<Cell<usize>>,
+        }
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let opened = self.opened.clone();
+                div().tab_group().child(
+                    Button::new("ineligible-trigger")
+                        .label("Actions")
+                        .w(px(100.))
+                        .h(px(30.))
+                        .disabled(self.disabled)
+                        .loading(self.loading)
+                        .dropdown_menu(|menu, _, _| menu)
+                        .on_open_change(move |open, _, _| {
+                            if *open {
+                                opened.set(opened.get() + 1);
+                            }
+                        }),
+                )
+            }
+        }
+
+        cx.update(crate::init);
+        for (disabled, loading) in [(true, false), (false, true)] {
+            let opened = Rc::new(Cell::new(0));
+            let (_, cx) = cx.add_window_view({
+                let opened = opened.clone();
+                move |_, _| Probe {
+                    disabled,
+                    loading,
+                    opened,
+                }
+            });
+            cx.update(|window, cx| {
+                window.activate_window();
+                window.draw(cx).clear(cx);
+                window.focus_next(cx);
+            });
+            cx.simulate_keystrokes("enter space");
+            cx.run_until_parked();
+            assert_eq!(opened.get(), 0, "disabled={disabled}, loading={loading}");
+        }
+    }
+
+    #[gpui::test]
     fn button_menu_trigger_exposes_activation_and_expanded_state(cx: &mut TestAppContext) {
         use crate::Disableable as _;
         use gpui::Element as _;
