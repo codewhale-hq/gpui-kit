@@ -824,6 +824,11 @@ impl RenderOnce for Button {
             this.accessibility_label(label)
         })
         .when(menu_trigger, |this| this.aria_expanded(open))
+        .when(menu_trigger && !interactive, |this| {
+            // Enter/Space are also bound by the owning Popover. Block that
+            // command before it reaches the parent while this trigger is inert.
+            this.on_action(|_: &crate::actions::Confirm, _, cx| cx.stop_propagation())
+        })
         .when(menu_trigger && interactive, |this| {
             let focus_handle = focus_handle.clone();
             this.on_a11y_action(gpui::accesskit::Action::Click, move |_, window, cx| {
