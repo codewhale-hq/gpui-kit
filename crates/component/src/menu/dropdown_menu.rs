@@ -90,17 +90,16 @@ where
 #[derive(Default)]
 struct DropdownMenuState {
     menu: Option<Entity<PopupMenu>>,
+    /// Focus target of the trigger, filled in when the trigger is built.
+    trigger_focus: Option<FocusHandle>,
 }
 
 impl<T> RenderOnce for DropdownMenuPopover<T>
 where
     T: Selectable + IntoElement + 'static,
 {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        TriggerFocus::new(self.id.clone(), move |trigger_focus, window, cx| {
-            self.render_popover(trigger_focus, window, cx)
-                .into_any_element()
-        })
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.render_popover(window, cx)
     }
 }
 
@@ -108,12 +107,7 @@ impl<T> DropdownMenuPopover<T>
 where
     T: Selectable + IntoElement + 'static,
 {
-    fn render_popover(
-        self,
-        trigger_focus: FocusHandle,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Popover {
+    fn render_popover(self, window: &mut Window, cx: &mut App) -> Popover {
         let builder = self.builder.clone();
         let menu_state =
             window.use_keyed_state(self.id.clone(), cx, |_, _| DropdownMenuState::default());
@@ -121,7 +115,11 @@ where
         Popover::new(SharedString::from(format!("popover:{}", self.id)))
             .appearance(false)
             .overlay_closable(false)
-            .trigger(self.trigger)
+            .trigger(FocusedTrigger {
+                id: self.id.clone(),
+                trigger: self.trigger,
+                menu_state: menu_state.clone(),
+            })
             .anchor(self.anchor)
             .when_some(self.on_open_change, |this, callback| {
                 this.on_open_change(move |open, window, cx| callback(open, window, cx))
@@ -140,9 +138,8 @@ where
                         let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
                             builder(menu, window, cx)
                         });
-                        menu.update(cx, |menu, cx| {
-                            menu.set_trigger_focus(Some(trigger_focus.clone()), cx)
-                        });
+                        let trigger_focus = menu_state.read(cx).trigger_focus.clone();
+                        menu.update(cx, |menu, cx| menu.set_trigger_focus(trigger_focus, cx));
                         menu_state.update(cx, |state, _| {
                             state.menu = Some(menu.clone());
                         });
@@ -289,6 +286,51 @@ impl Element for TriggerFocus {
         cx: &mut App,
     ) {
         frame.child.paint(window, cx);
+    }
+}
+
+/// A trigger whose focus target is the trigger element itself. The popover's
+/// Space and Enter bindings live on the popup, so focus must sit inside it:
+/// a `TriggerFocus` around the whole popover sits above it and reaches nothing.
+struct FocusedTrigger<T> {
+    id: ElementId,
+    trigger: T,
+    menu_state: Entity<DropdownMenuState>,
+}
+
+impl<T: Selectable> Selectable for FocusedTrigger<T> {
+    fn selected(mut self, selected: bool) -> Self {
+        self.trigger = self.trigger.selected(selected);
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.trigger.is_selected()
+    }
+
+    fn open(mut self, open: bool) -> Self {
+        self.trigger = self.trigger.open(open);
+        self
+    }
+
+    fn is_open(&self) -> bool {
+        self.trigger.is_open()
+    }
+}
+
+impl<T: IntoElement + 'static> IntoElement for FocusedTrigger<T> {
+    type Element = TriggerFocus;
+
+    fn into_element(self) -> Self::Element {
+        let FocusedTrigger {
+            id,
+            trigger,
+            menu_state,
+        } = self;
+        TriggerFocus::new(id, move |trigger_focus, _, cx| {
+            menu_state.update(cx, |state, _| state.trigger_focus = Some(trigger_focus));
+            trigger.into_any_element()
+        })
     }
 }
 
