@@ -202,3 +202,34 @@ async fn submenu_opens_unclipped_from_a_scrollable_menu(cx: &mut TestAppContext)
     })
     .await;
 }
+
+#[gpui_kit::test]
+async fn dropdown_opened_by_pointer_returns_focus_to_its_trigger_and_space_reopens(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let (handle, _) = common::open_window(cx, Some(size(px(640.), px(480.))), |_, cx| {
+        cx.new(|cx| Commands {
+            saved: false,
+            focus: cx.focus_handle(),
+        })
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // Nothing holds focus when the pointer opens the menu, so the menu has
+        // no previous focus to return to: Escape must leave focus on the trigger.
+        window.click("commands", cx);
+        assert_eq!(window.find("popup-menu").focused(), Some(true));
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(1), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("space", cx);
+        assert_eq!(window.find("popup-menu").focused(), Some(true));
+    })
+    .unwrap();
+}

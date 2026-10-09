@@ -1062,10 +1062,13 @@ impl PopupMenu {
         let focus_moved_away =
             window.focused(cx).is_some() && !self.focus_handle.contains_focused(window, cx);
         if !focus_moved_away {
+            // A menu opened by pointer may have no previous focus to return to.
+            // Its trigger is then where focus belongs, so Space can reopen it.
             if let Some(handle) = self
                 .previous_focus_handle
                 .as_ref()
                 .or(self.action_context.as_ref())
+                .or(self.trigger_focus_handle.as_ref())
             {
                 window.focus(handle, cx);
             }
