@@ -636,6 +636,37 @@ impl RenderOnce for Button {
             .clone();
         let is_focused = focus_handle.is_focused(window);
 
+        let hover_fill = style.hovered(self.outline, cx).bg.as_solid();
+        let eased_hover = (interactive && !disabled && !selected && hover_group.is_none())
+            .then(|| normal_style.bg.as_solid().zip(hover_fill))
+            .flatten()
+            .filter(|_| instance_style.background.is_none());
+        let hover_state = eased_hover.map(|_| {
+            window.use_keyed_state(
+                ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "hover".into()),
+                cx,
+                |_, _| false,
+            )
+        });
+        let hover_fill_now = eased_hover.zip(hover_state.as_ref()).map(|((rest, hover), state)| {
+            let target = if *state.read(cx) { 1.0 } else { 0.0 };
+            let t = gpui_base::spring(
+                ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "hover-ease".into()),
+                target,
+                cx.theme().motion_tokens().spring_control,
+                window,
+                cx,
+            );
+            let (a, b) = (rest.to_rgb(), hover.to_rgb());
+            let lerp = |x: f32, y: f32| x + (y - x) * t;
+            Hsla::from(gpui::Rgba {
+                r: lerp(a.r, b.r),
+                g: lerp(a.g, b.g),
+                b: lerp(a.b, b.b),
+                a: lerp(a.a, b.a),
+            })
+        });
+
         let rounding = match self.rounded {
             ButtonRounded::Small => cx.theme().radius * 0.5,
             ButtonRounded::Medium => cx.theme().radius,
@@ -708,7 +739,7 @@ impl RenderOnce for Button {
             })
             .when(!self.disabled && !selected, |this| {
                 this.border_color(normal_style.border)
-                    .bg(normal_style.bg)
+                    .bg(hover_fill_now.map_or(normal_style.bg, Background::from))
                     .text_color(normal_style.fg)
                     .when(normal_style.underline, |this| this.text_decoration_1())
                     // A loading button keeps its normal colors, but must not react
@@ -716,7 +747,7 @@ impl RenderOnce for Button {
                     .when(interactive, |this| {
                         this.hover(|this| {
                             let hover_style = style.hovered(self.outline, cx);
-                            this.bg(hover_style.bg)
+                            this.bg(hover_fill_now.map_or(hover_style.bg, Background::from))
                                 .border_color(hover_style.border)
                                 .text_color(hover_style.fg)
                         })
@@ -883,9 +914,19 @@ impl RenderOnce for Button {
         .when(loading, |this| {
             this.on_click(|_, _, cx| cx.stop_propagation())
         })
-        .when_some(self.on_hover.filter(|_| hoverable), |this, on_hover| {
+        .map(|this| {
+            let on_hover = self.on_hover.filter(|_| hoverable);
+            if on_hover.is_none() && hover_state.is_none() {
+                return this;
+            }
             this.on_hover(move |hovered, window, cx| {
-                on_hover(hovered, window, cx);
+                if let Some(state) = &hover_state {
+                    state.update(cx, |state, _| *state = *hovered);
+                    window.refresh();
+                }
+                if let Some(on_hover) = &on_hover {
+                    on_hover(hovered, window, cx);
+                }
             })
         })
         .map(|this| {
