@@ -640,7 +640,7 @@ impl RenderOnce for Button {
         let eased_hover = (interactive && !disabled && !selected && hover_group.is_none())
             .then(|| normal_style.bg.as_solid().zip(hover_fill))
             .flatten()
-            .filter(|_| instance_style.background.is_none());
+            .filter(|_| instance_style.background.is_none() && instance_style.position.is_none());
         let hover_state = eased_hover.map(|_| {
             window.use_keyed_state(
                 ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "hover".into()),
@@ -886,6 +886,23 @@ impl RenderOnce for Button {
         .tab_index(self.tab_index)
         .tab_stop(self.tab_stop)
         .child(content)
+        .when_some(hover_state, |this, state| {
+            this.relative().child(
+                div()
+                    .id(ElementId::NamedChild(
+                        std::sync::Arc::new(self.id.clone()),
+                        "hover-probe".into(),
+                    ))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .on_hover(move |hovered, window, cx| {
+                        state.update(cx, |state, _| *state = *hovered);
+                        window.refresh();
+                    }),
+            )
+        })
         // Fade the whole button while loading, so every variant is dimmed by
         // the same amount. Fading `bg`, `border` and `fg` one by one instead
         // only shows up on variants that have a background to begin with:
@@ -919,19 +936,9 @@ impl RenderOnce for Button {
         .when(loading, |this| {
             this.on_click(|_, _, cx| cx.stop_propagation())
         })
-        .map(|this| {
-            let on_hover = self.on_hover.filter(|_| hoverable);
-            if on_hover.is_none() && hover_state.is_none() {
-                return this;
-            }
+        .when_some(self.on_hover.filter(|_| hoverable), |this, on_hover| {
             this.on_hover(move |hovered, window, cx| {
-                if let Some(state) = &hover_state {
-                    state.update(cx, |state, _| *state = *hovered);
-                    window.refresh();
-                }
-                if let Some(on_hover) = &on_hover {
-                    on_hover(hovered, window, cx);
-                }
+                on_hover(hovered, window, cx);
             })
         })
         .map(|this| {
