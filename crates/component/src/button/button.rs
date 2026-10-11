@@ -648,24 +648,29 @@ impl RenderOnce for Button {
                 |_, _| false,
             )
         });
-        let hover_fill_now = eased_hover.zip(hover_state.as_ref()).map(|((rest, hover), state)| {
-            let target = if *state.read(cx) { 1.0 } else { 0.0 };
-            let t = gpui_base::spring(
-                ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "hover-ease".into()),
-                target,
-                cx.theme().motion_tokens().spring_control,
-                window,
-                cx,
-            );
-            let (a, b) = (rest.to_rgb(), hover.to_rgb());
-            let lerp = |x: f32, y: f32| x + (y - x) * t;
-            Hsla::from(gpui::Rgba {
-                r: lerp(a.r, b.r),
-                g: lerp(a.g, b.g),
-                b: lerp(a.b, b.b),
-                a: lerp(a.a, b.a),
-            })
-        });
+        let hover_fill_now = eased_hover
+            .zip(hover_state.as_ref())
+            .map(|((rest, hover), state)| {
+                let target = if *state.read(cx) { 1.0 } else { 0.0 };
+                let t = gpui_base::spring(
+                    ElementId::NamedChild(
+                        std::sync::Arc::new(self.id.clone()),
+                        "hover-ease".into(),
+                    ),
+                    target,
+                    cx.theme().motion_tokens().spring_control,
+                    window,
+                    cx,
+                );
+                let (a, b) = (rest.to_rgb(), hover.to_rgb());
+                let lerp = |x: f32, y: f32| x + (y - x) * t;
+                Hsla::from(gpui::Rgba {
+                    r: lerp(a.r, b.r),
+                    g: lerp(a.g, b.g),
+                    b: lerp(a.b, b.b),
+                    a: lerp(a.a, b.a),
+                })
+            });
 
         let rounding = match self.rounded {
             ButtonRounded::Small => cx.theme().radius * 0.5,
