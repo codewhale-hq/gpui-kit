@@ -74,6 +74,18 @@ pub fn apply_system_reduce_motion(cx: &mut App) {
     }
 }
 
+/// Hands the reduced-motion flag back to the operating system.
+///
+/// An application that set the flag itself (a "Reduced" or "Full" choice)
+/// calls this when the person picks "follow the system" instead: Base takes
+/// the flag over again as if it had written the current value, reads the
+/// platform preference into it at once, and keeps following it.
+pub fn follow_system_reduce_motion(cx: &mut App) {
+    let current = cx.reduce_motion();
+    cx.default_global::<SystemReduceMotion>().applied = Some(current);
+    apply_system_reduce_motion(cx);
+}
+
 /// Whether the application runs on GPUI's deterministic test scheduler,
 /// which must not be woken by a platform answering from its own thread.
 fn is_test_scheduler(cx: &App) -> bool {
