@@ -77,12 +77,14 @@ pub fn apply_system_reduce_motion(cx: &mut App) {
 /// Hands the reduced-motion flag back to the operating system.
 ///
 /// An application that set the flag itself (a "Reduced" or "Full" choice)
-/// calls this when the person picks "follow the system" instead: Base takes
-/// the flag over again as if it had written the current value, reads the
-/// platform preference into it at once, and keeps following it.
+/// calls this when the person picks "follow the system" instead. The flag
+/// returns to the state a fresh launch starts from: GPUI's `false`, owned by
+/// Base, then the platform preference read into it at once and followed from
+/// then on. Where the platform cannot say, the flag stays `false`, as it would
+/// at launch.
 pub fn follow_system_reduce_motion(cx: &mut App) {
-    let current = cx.reduce_motion();
-    cx.default_global::<SystemReduceMotion>().applied = Some(current);
+    cx.set_reduce_motion(false);
+    cx.default_global::<SystemReduceMotion>().applied = Some(false);
     apply_system_reduce_motion(cx);
 }
 
