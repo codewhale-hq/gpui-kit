@@ -100,15 +100,17 @@ async function init() {
 
     // Show error message
     if (loadingEl) {
-      loadingEl.innerHTML = `
-        <div class="error">
-          <h2>Failed to load the application</h2>
-          <p>${error.message || error}</p>
-          <p style="margin-top: 10px; font-size: 14px;">
-            Please check the console for more details.
-          </p>
-        </div>
-      `;
+      const box = document.createElement('div');
+      box.className = 'error';
+      const title = document.createElement('h2');
+      title.textContent = 'Failed to load the application';
+      const message = document.createElement('p');
+      message.textContent = String(error.message || error);
+      const hint = document.createElement('p');
+      hint.style.cssText = 'margin-top: 10px; font-size: 14px;';
+      hint.textContent = 'Please check the console for more details.';
+      box.append(title, message, hint);
+      loadingEl.replaceChildren(box);
     }
   }
 }
